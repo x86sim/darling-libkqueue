@@ -19,7 +19,21 @@
 struct map {
     size_t len;
     void **data;
+    /* x86Code Perf 2: one past the highest index ever made non-empty. kqmap is sized to the fd limit (524288 here)
+     * and kqueue_foreach (every fd close, every socket change) walked all of it: iosurfaced and metalhostd pass
+     * buffers as fds every frame, ~14% of a scroll's samples were this loop. Slots above hi are always empty, so
+     * map_foreach visits the same entries in the same order. Raised before the slot is stored. */
+    size_t hi;
 };
+
+static void
+map_raise_hi(struct map *m, int idx)
+{
+    size_t want = (size_t)idx + 1;
+    size_t cur = __atomic_load_n(&m->hi, __ATOMIC_RELAXED);
+    while (cur < want && !__atomic_compare_exchange_n(&m->hi, &cur, want, 1, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED))
+        ;
+}
 
 struct map *
 map_new(size_t len)
@@ -57,6 +71,7 @@ map_insert(struct map *m, int idx, void *ptr)
     if (slowpath(idx < 0 || idx > (int)m->len))
            return (-1);
 
+    map_raise_hi(m, idx);
     if (atomic_ptr_cas(&(m->data[idx]), 0, ptr) == NULL) {
         dbg_printf("inserted %p in location %d", ptr, idx);
         return (0);
@@ -91,6 +106,8 @@ map_replace(struct map *m, int idx, void *oldp, void *newp)
     if (slowpath(idx < 0 || idx > (int)m->len))
            return (-1);
 
+    if (newp)
+        map_raise_hi(m, idx);
     tmp = atomic_ptr_cas(&(m->data[idx]), oldp, newp);
     if (tmp == oldp) {
         dbg_printf("replaced value %p in location %d with value %p",
@@ -116,7 +133,10 @@ void
 map_foreach(struct map *m, void(*cb)(int, void*, void*), void* private)
 {
     int i;
-    for (i = 0; i < (int)m->len; i++) {
+    size_t n = __atomic_load_n(&m->hi, __ATOMIC_SEQ_CST);
+    if (n > m->len)
+        n = m->len;
+    for (i = 0; i < (int)n; i++) {
         if (m->data[i])
             cb(i, m->data[i], private);
     }
