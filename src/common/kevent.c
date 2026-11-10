@@ -152,7 +152,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
 
     dbg_printf("src=%s", kevent_dump(src));
 
-    kn = knote_lookup(filt, src->ident);
+    kn = knote_lookup(filt, src);
     dbg_printf("knote_lookup: ident %d == %p", (int)src->ident, kn);
 #ifdef DARLING
     /*
@@ -312,9 +312,12 @@ err_path:
             nevents--;
             eventlist++;
             nret++;
-        } else {
+        } else if (status != 0) {
+            errno = status;
             return (-1);
         }
+        /* A successful receipt needs output space only to report it. Keep
+         * applying changes when the caller requests no more output events. */
     }
 
     return (nret);
@@ -431,7 +434,7 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
     kq = kqueue_lookup(kqfd);
     if (kq == NULL) {
         pthread_mutex_unlock(&kq_mtx);
-        errno = ENOENT;
+        errno = EBADF;
         return (-1);
     }
 
@@ -461,7 +464,9 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
             nevents -= rv;
             ret += rv;
 
-            // keep going to process more events (if we have room)
+            // On macOS / BSD: if an error occurred while processing changelist,
+            // kevent() returns immediately with the errors in eventlist without waiting.
+            goto out;
         }
     }
 
@@ -480,10 +485,20 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
         if (ts != NULL && (ts->tv_sec > 0 || ts->tv_nsec > 0))
             deadline = deadline_ns(ts);
 again:
+        /*
+         * The events returned by kevent_wait() point at knotes. Another
+         * thread may delete one of them before we copy it out, so knotes
+         * queued for freeing are only reclaimed once no thread is waiting.
+         */
+        kqueue_lock(kq);
+        kq->kq_waiters++;
+        kqueue_unlock(kq);
+
         rv = kqops.kevent_wait(kq, nevents, ts);
         dbg_printf("kqops.kevent_wait returned %d", rv);
 
         kqueue_lock(kq);
+        kq->kq_waiters--;
         if (fastpath(rv > 0)) {
             rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
             ret += rv;

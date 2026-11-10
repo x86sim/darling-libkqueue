@@ -105,12 +105,97 @@ test_kevent_vnode_note_write(struct test_context *ctx)
 
     testfile_write(ctx->testfile);
 
-    /* BSD kqueue adds NOTE_EXTEND even though it was not requested */
+    /* Only the requested events that happened are reported: no NOTE_EXTEND */
     /* BSD kqueue removes EV_ENABLE */
     kev.flags &= ~EV_ENABLE; // XXX-FIXME compatibility issue
-    kev.fflags |= NOTE_EXTEND; // XXX-FIXME compatibility issue
     kevent_get(&ret, ctx->kqfd);
     kevent_cmp(&kev, &ret);
+}
+
+void
+test_kevent_vnode_note_extend(struct test_context *ctx)
+{
+    struct kevent kev, ret;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_ADD | EV_ONESHOT, NOTE_EXTEND, 0, NULL);
+
+    testfile_write(ctx->testfile);
+
+    kev.flags &= ~EV_ENABLE; // XXX-FIXME compatibility issue
+    kevent_get(&ret, ctx->kqfd);
+    kevent_cmp(&kev, &ret);
+}
+
+/* An event that is dropped (here a chmod, not requested) must not consume
+   the watch of a one-shot knote. */
+void
+test_kevent_vnode_oneshot_after_dropped_event(struct test_context *ctx)
+{
+    struct kevent kev, ret;
+    struct timespec timeout = { 2, 0 };
+    int nfds;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_ADD | EV_ONESHOT, NOTE_WRITE, 0, NULL);
+
+    if (chmod(ctx->testfile, 0640) < 0)
+        die("chmod");
+    testfile_write(ctx->testfile);
+
+    nfds = kevent(ctx->kqfd, NULL, 0, &ret, 1, &timeout);
+    if (nfds != 1 || ret.filter != EVFILT_VNODE || ret.fflags != NOTE_WRITE)
+        errx(1, "%s - write after an unrequested chmod was not reported (nfds=%d)", test_id, nfds);
+}
+
+/* Events queued together are reported together: a write then a chmod seen
+   in one kevent() must give both notes. */
+void
+test_kevent_vnode_write_and_attrib_together(struct test_context *ctx)
+{
+    struct kevent kev, ret;
+    struct timespec timeout = { 2, 0 };
+    int nfds;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_ADD | EV_ONESHOT, NOTE_WRITE | NOTE_ATTRIB, 0, NULL);
+
+    testfile_write(ctx->testfile);
+    if (chmod(ctx->testfile, 0600) < 0)
+        die("chmod");
+
+    nfds = kevent(ctx->kqfd, NULL, 0, &ret, 1, &timeout);
+    if (nfds != 1 || ret.filter != EVFILT_VNODE || ret.fflags != (NOTE_WRITE | NOTE_ATTRIB))
+        errx(1, "%s - write and chmod not reported together (nfds=%d; fflags=%#x)",
+                test_id, nfds, (unsigned int)ret.fflags);
+}
+
+/* Closing another descriptor for the same file is not a vnode event and
+   must not delete the knote. */
+void
+test_kevent_vnode_close_other_fd(struct test_context *ctx)
+{
+    struct kevent kev, ret;
+    struct timespec timeout = { 0, 200 * 1000 * 1000 };
+    int fd2, nfds;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_ADD, NOTE_WRITE, 0, NULL);
+
+    fd2 = open(ctx->testfile, O_RDONLY);
+    if (fd2 < 0)
+        err(1, "open of %s", ctx->testfile);
+    close(fd2);
+
+    nfds = kevent(ctx->kqfd, NULL, 0, &ret, 1, &timeout);
+    if (nfds != 0)
+        errx(1, "%s - close of a second descriptor produced an event (fflags=%#x)",
+                test_id, (unsigned int)ret.fflags);
+
+    /* The knote must still be registered */
+    testfile_write(ctx->testfile);
+    kevent_get(&ret, ctx->kqfd);
+    if (ret.filter != EVFILT_VNODE || ret.fflags != NOTE_WRITE)
+        errx(1, "%s - incorrect event (filt=%d; fflags=%#x)", test_id, ret.filter,
+                (unsigned int)ret.fflags);
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
 }
 
 void
@@ -155,6 +240,156 @@ test_kevent_vnode_note_rename(struct test_context *ctx)
     testfile_rename(ctx->testfile, 1);
 
     test_no_kevents(ctx->kqfd);
+}
+
+/* Wait for events on ident and return the union of their fflags; 0 if
+   nothing arrives within the timeout */
+static unsigned int
+vnode_collect(int kqfd, int ident)
+{
+    struct kevent ret;
+    struct timespec timeout = { 1, 0 };
+    unsigned int fflags = 0;
+
+    while (kevent(kqfd, NULL, 0, &ret, 1, &timeout) == 1) {
+        if (ret.filter != EVFILT_VNODE || (int) ret.ident != ident)
+            errx(1, "%s - unexpected event (ident=%d; filt=%d)", test_id,
+                    (int) ret.ident, ret.filter);
+        fflags |= ret.fflags;
+        timeout.tv_sec = 0;
+        timeout.tv_nsec = 200 * 1000 * 1000;
+    }
+    return (fflags);
+}
+
+static void
+vnode_expect(int kqfd, int ident, unsigned int expected, const char *what)
+{
+    unsigned int fflags = vnode_collect(kqfd, ident);
+
+    if (fflags != expected)
+        errx(1, "%s - %s: fflags=%#x, expected %#x", test_id, what,
+                fflags, expected);
+}
+
+/* A directory reports NOTE_WRITE for entries added, removed or renamed
+   in or out of it, and NOTE_LINK when that changes its link count (a
+   subdirectory added or removed). Changes to the entries themselves are
+   not events of the directory, and it does not report NOTE_EXTEND. */
+void
+test_kevent_vnode_dir_entries(struct test_context *ctx)
+{
+    struct kevent kev;
+    char dir[1024], other[1024], path[1100], path2[1100];
+    int dfd, fd;
+
+    snprintf(dir, sizeof(dir), "%s.d", ctx->testfile);
+    snprintf(other, sizeof(other), "%s.o", ctx->testfile);
+    if (mkdir(dir, 0700) < 0 || mkdir(other, 0700) < 0)
+        die("mkdir");
+    if ((dfd = open(dir, O_RDONLY)) < 0)
+        die("open");
+
+    kevent_add(ctx->kqfd, &kev, dfd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+            NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_LINK | NOTE_DELETE, 0, NULL);
+
+    snprintf(path, sizeof(path), "%s/f", dir);
+    if ((fd = open(path, O_CREAT | O_WRONLY, 0600)) < 0)
+        die("open");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE, "create");
+
+    if (write(fd, "hi", 2) != 2)
+        die("write");
+    if (fchmod(fd, 0640) < 0)
+        die("fchmod");
+    close(fd);
+    vnode_expect(ctx->kqfd, dfd, 0, "write and chmod of an entry");
+
+    snprintf(path2, sizeof(path2), "%s/g", dir);
+    if (rename(path, path2) < 0)
+        die("rename");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE, "rename within");
+
+    snprintf(path, sizeof(path), "%s/g", other);
+    if (rename(path2, path) < 0)
+        die("rename");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE, "rename out");
+    if (rename(path, path2) < 0)
+        die("rename");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE, "rename in");
+
+    if (unlink(path2) < 0)
+        die("unlink");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE, "unlink");
+
+    snprintf(path, sizeof(path), "%s/s", dir);
+    if (mkdir(path, 0700) < 0)
+        die("mkdir");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE | NOTE_LINK, "mkdir");
+
+    snprintf(path2, sizeof(path2), "%s/t", dir);
+    if (rename(path, path2) < 0)
+        die("rename");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE, "rename subdirectory within");
+
+    if (rmdir(path2) < 0)
+        die("rmdir");
+    vnode_expect(ctx->kqfd, dfd, NOTE_WRITE | NOTE_LINK, "rmdir");
+
+    if (chmod(dir, 0750) < 0)
+        die("chmod");
+    vnode_expect(ctx->kqfd, dfd, NOTE_ATTRIB, "chmod of the directory");
+
+    kevent_add(ctx->kqfd, &kev, dfd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
+    close(dfd);
+    rmdir(dir);
+    rmdir(other);
+}
+
+/* link() and unlink() of another name change the link count: NOTE_LINK,
+   and an unlink() is NOTE_DELETE; neither is NOTE_ATTRIB. */
+void
+test_kevent_vnode_note_link(struct test_context *ctx)
+{
+    struct kevent kev;
+    char path[1100];
+
+    snprintf(path, sizeof(path), "%s.lnk", ctx->testfile);
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+            NOTE_LINK | NOTE_DELETE | NOTE_ATTRIB, 0, NULL);
+
+    if (link(ctx->testfile, path) < 0)
+        die("link");
+    vnode_expect(ctx->kqfd, ctx->vnode_fd, NOTE_LINK, "link");
+
+    if (unlink(path) < 0)
+        die("unlink");
+    vnode_expect(ctx->kqfd, ctx->vnode_fd, NOTE_DELETE | NOTE_LINK, "unlink of another name");
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
+}
+
+/* QUIRK test (see the QUIRK comment in src/linux/vnode.c): a truncation
+   that makes the file smaller is NOTE_ATTRIB, not NOTE_WRITE. */
+void
+test_kevent_vnode_truncate_is_attrib(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    if (pwrite(ctx->vnode_fd, "hello", 5, 0) != 5)
+        die("pwrite");
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+            NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB, 0, NULL);
+
+    if (ftruncate(ctx->vnode_fd, 1) < 0)
+        die("ftruncate");
+    vnode_expect(ctx->kqfd, ctx->vnode_fd, NOTE_ATTRIB, "ftruncate to a smaller size");
+
+    if (write(ctx->vnode_fd, "more", 4) != 4)
+        die("write");
+    vnode_expect(ctx->kqfd, ctx->vnode_fd, NOTE_WRITE | NOTE_EXTEND, "write");
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
 }
 
 void
@@ -263,8 +498,15 @@ test_evfilt_vnode(struct test_context *ctx)
     test(kevent_vnode_dispatch, ctx);
 #endif
     test(kevent_vnode_note_write, ctx);
+    test(kevent_vnode_note_extend, ctx);
+    test(kevent_vnode_close_other_fd, ctx);
+    test(kevent_vnode_oneshot_after_dropped_event, ctx);
+    test(kevent_vnode_write_and_attrib_together, ctx);
     test(kevent_vnode_note_attrib, ctx);
     test(kevent_vnode_note_rename, ctx);
+    test(kevent_vnode_dir_entries, ctx);
+    test(kevent_vnode_note_link, ctx);
+    test(kevent_vnode_truncate_is_attrib, ctx);
     test(kevent_vnode_note_delete, ctx);
     /* TODO: test r590 corner case where a descriptor is closed and
              the associated knote is automatically freed. */

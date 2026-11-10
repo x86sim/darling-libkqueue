@@ -65,10 +65,24 @@ map_new(size_t len)
     return (dst);
 }
 
+void
+map_free(struct map *m)
+{
+    if (m == NULL)
+        return;
+#ifdef _WIN32
+    free(m->data);
+#else
+    if (m->data != MAP_FAILED && m->data != NULL)
+        munmap(m->data, m->len * sizeof(void *));
+#endif
+    free(m);
+}
+
 int
 map_insert(struct map *m, int idx, void *ptr)
 {
-    if (slowpath(idx < 0 || idx > (int)m->len))
+    if (slowpath(idx < 0 || idx >= (int)m->len))
            return (-1);
 
     map_raise_hi(m, idx);
@@ -86,7 +100,7 @@ map_insert(struct map *m, int idx, void *ptr)
 int
 map_remove(struct map *m, int idx, void *ptr)
 {
-    if (slowpath(idx < 0 || idx > (int)m->len))
+    if (slowpath(idx < 0 || idx >= (int)m->len))
            return (-1);
 
     if (atomic_ptr_cas(&(m->data[idx]), ptr, 0) == NULL) {
@@ -103,7 +117,7 @@ map_replace(struct map *m, int idx, void *oldp, void *newp)
 {
     void *tmp;
 
-    if (slowpath(idx < 0 || idx > (int)m->len))
+    if (slowpath(idx < 0 || idx >= (int)m->len))
            return (-1);
 
     if (newp)
@@ -123,7 +137,7 @@ map_replace(struct map *m, int idx, void *oldp, void *newp)
 void *
 map_lookup(struct map *m, int idx)
 {
-    if (slowpath(idx < 0 || idx > (int)m->len))
+    if (slowpath(idx < 0 || idx >= (int)m->len))
         return (NULL);
 
     return m->data[idx];
@@ -148,7 +162,7 @@ map_delete(struct map *m, int idx)
     void *oval;
     void *nval;
 
-    if (slowpath(idx < 0 || idx > (int)m->len))
+    if (slowpath(idx < 0 || idx >= (int)m->len))
            return ((void *)-1);
 
     /* Hopefully we aren't racing with another thread, but you never know.. */

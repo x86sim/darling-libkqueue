@@ -22,6 +22,7 @@
 #ifdef DARLING
 #include "../darling/listenregistry.h"
 #include <darling/emulation/linux_premigration/ext/for-libkqueue.h>
+#include <sys/param.h>
 #endif
 
 /*
@@ -43,7 +44,8 @@ const struct kqueue_vtable kqops = {
     linux_eventfd_close,
     linux_eventfd_raise,
     linux_eventfd_lower,
-    linux_eventfd_descriptor
+    linux_eventfd_descriptor,
+    linux_kqueue_atfork
 };
 
 static void tls_setup(void)
@@ -94,8 +96,25 @@ linux_kqueue_init(struct kqueue *kq)
 void
 linux_kqueue_free(struct kqueue *kq UNUSED)
 {
-    __close_for_kqueue(kq->kq_id);
+    /* -1 after linux_kqueue_atfork() */
+    if (kq->kq_id >= 0)
+        __close_for_kqueue(kq->kq_id);
     // abort();//FIXME
+}
+
+void
+linux_kqueue_atfork(struct kqueue *kq)
+{
+    /*
+     * A forked child inherits the epoll descriptor, but it refers to the
+     * same epoll instance as the parent's. Removing the knotes from it while
+     * the child frees the kqueue would remove them from the parent's kqueue
+     * too, and the parent would stop receiving their events. Drop the
+     * child's reference to the instance instead; the deletes that follow
+     * then leave it untouched.
+     */
+    (void) __close_for_kqueue(kq->kq_id);
+    kq->kq_id = -1;
 }
 
 static int
@@ -206,6 +225,15 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
         ev = &epevt_get()[i];
         kn = (struct knote *) ev->data.ptr;
         event = eventlist;
+        /*
+         * The knote may have been deleted or disabled by another thread
+         * after epoll_wait() returned it. Such a knote must not be
+         * delivered (the caller may already have freed its udata).
+         */
+        if ((kn->kn_flags & KNFL_KNOTE_DELETED) || (kn->kev.flags & EV_DISABLE)) {
+            nret--;
+            continue;
+        }
         if (kn->kev.filter == 0) {
             dbg_puts("kevent copyout for zero filter, discarding!");
             nret--;
@@ -438,6 +466,28 @@ epoll_update(int op, struct filter *filt, struct knote *kn, struct epoll_event *
 int
 linux_fd_to_path(char *buf, size_t bufsz, int fd)
 {
+#ifdef DARLING
+    /*
+     * The callers pass the path to inotify, whose wrapper takes a guest
+     * path and translates it to the host path. readlink() on /proc/.../fd
+     * would return the host path, which would then be translated a second
+     * time. F_GETPATH returns the guest path.
+     */
+    char path[MAXPATHLEN];
+    size_t len;
+
+    if (fcntl(fd, F_GETPATH, path) < 0)
+        return (-1);
+
+    len = strlen(path);
+    if (len >= bufsz) {
+        errno = ENAMETOOLONG;
+        return (-1);
+    }
+
+    memcpy(buf, path, len + 1);
+    return ((int) len);
+#else
     char path[1024];    //TODO: Maxpathlen, etc.
 
     if (snprintf(&path[0], sizeof(path), "/proc/%d/fd/%d", getpid(), fd) < 0)
@@ -445,6 +495,7 @@ linux_fd_to_path(char *buf, size_t bufsz, int fd)
 
     memset(buf, 0, bufsz);
     return (readlink(path, buf, bufsz));
+#endif
 }
 
 

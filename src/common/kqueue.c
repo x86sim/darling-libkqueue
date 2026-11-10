@@ -58,6 +58,8 @@ get_fd_limit(void)
         dbg_perror("getrlimit(2)");
         return (65536);
     } else {
+        if (rlim.rlim_max > 65536)
+            return (65536);
         return (rlim.rlim_max);
     }
 #endif
@@ -115,6 +117,11 @@ kqueue_cmp(struct kqueue *a, struct kqueue *b)
 void kqueue_cleanup(struct kqueue* kq)
 {
     struct knote *next, *tmp;
+
+    /* A waiter may still hold a pointer to a knote on this list */
+    if (kq->kq_waiters != 0)
+        return;
+
     for (next = kq->kq_tofree.lh_first; next != NULL; next = tmp)
     {
         tmp = next->kn_entries2free.le_next;
@@ -137,6 +144,7 @@ kqueue_free(struct kqueue *kq)
 	// XXX: we should be doing this more efficiently (i.e. without walking through all open kqueues)
 	map_foreach(kqmap, kqueue_free_cb, kq);
     filter_unregister_all(kq);
+    kqueue_cleanup(kq);
     kqops.kqueue_free(kq);
     free(kq);
 }
@@ -212,6 +220,9 @@ static void kqueue_close_ref_cb(int kqfd, void* kqptr, void* private) {
 static void
 kqueue_foreach(void (*fn)(struct kqueue *, void *), void *arg)
 {
+	if (kqmap == NULL)
+		return;
+
 	struct kqueue_close_context context;
 	context.kqs_to_check = context.kqs_to_check_buffer;
 	context.buffer_size = sizeof(context.kqs_to_check_buffer) / sizeof(*context.kqs_to_check_buffer);
@@ -253,6 +264,13 @@ kqueue_closed_fd_cb(struct kqueue *kq, void *arg)
 	kevent_copyin_one(kq, &ev[1]);
 	kevent_copyin_one(kq, &ev[2]);
 	kevent_copyin_one(kq, &ev[3]);
+
+	// and every other registration of the fd: EV_UDATA_SPECIFIC ones are not found by ident alone (upstream libkqueue)
+	struct filter *filt;
+	if (filter_lookup(&filt, kq, EVFILT_READ) == 0)
+		knote_delete_ident(filt, ev[0].ident);
+	if (filter_lookup(&filt, kq, EVFILT_WRITE) == 0)
+		knote_delete_ident(filt, ev[0].ident);
 }
 
 // this function is too expensive for how often it can be called (which is every time an FD is closed).
@@ -312,7 +330,8 @@ kqueue_socket_changed_cb(struct kqueue *kq, void *arg)
 	struct knote *kn;
 
 	if (filter_lookup(&filt, kq, EVFILT_SOCK) == 0) {
-		kn = knote_lookup(filt, *(int *) arg);
+		struct kevent64_s query = { .ident = (uint64_t) *(int *) arg };
+		kn = knote_lookup(filt, &query);
 		if (kn != NULL)
 			evfilt_sock_changed(kn);
 	}
@@ -365,16 +384,27 @@ static void _kqueue_close_atfork_cb(int kqfd, void* kqptr, void* private)
 
     // Mutexes are not valid after a fork, reset it to unlocked state
     tracing_mutex_init(&kq->kq_mtx, NULL);
+    // The threads that were waiting on it do not exist in the child
+    kq->kq_waiters = 0;
+
+    // The kernel objects backing the kqueue are shared with the parent,
+    // which keeps using them. Detach from them before the teardown below,
+    // so that it releases only the child's copies.
+    if (kqops.kqueue_atfork != NULL)
+        kqops.kqueue_atfork(kq);
 
     kqueue_delref(kq);
 }
 
 void VISIBLE kqueue_atfork(void)
 {
+    // Mutexes are not valid after a fork, reset it to unlocked state
+    pthread_mutex_init(&kq_mtx, NULL);
+#ifdef DARLING
+    __darling_kqueue_listenregistry_atfork();
+#endif
     if (kqmap != NULL)
     {
-        // Mutexes are not valid after a fork, reset it to unlocked state
-        pthread_mutex_init(&kq_mtx, NULL);
         map_foreach(kqmap, _kqueue_close_atfork_cb, NULL);
     }
 }
