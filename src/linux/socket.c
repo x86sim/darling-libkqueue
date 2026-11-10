@@ -1,4 +1,4 @@
-/* x86Code: ported from willi/darling-libkqueue#5 (research/willi/darling-libkqueue-5.diff); see FINDINGS.md "Spike 3.8" */
+/* x86Sim: ported from willi/darling-libkqueue#5 (research/willi/darling-libkqueue-5.diff); see FINDINGS.md "Spike 3.8" */
 /*
  * EVFILT_SOCK, XNU's socket event filter (bsd/kern/uipc_socket.c: filt_sockattach, filt_sockev_common,
  * filt_socktouch, filt_sockprocess). Apple's Network.framework learns from it that a nonblocking connect()
@@ -52,7 +52,7 @@ struct sock_knote {
     int efd;            /* wakes the knote outside the socket's events */
 };
 
-/* x86Code: this tree's knote has a kn_extra_buffer pointer (EVFILT_MACHPORT mallocs it), not an inline buffer: the
+/* x86Sim: this tree's knote has a kn_extra_buffer pointer (EVFILT_MACHPORT mallocs it), not an inline buffer: the
  * state is allocated with the knote (evfilt_sock_knote_create) and freed with it */
 
 static struct sock_knote *

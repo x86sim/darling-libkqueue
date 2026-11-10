@@ -40,7 +40,7 @@ evfilt_socket_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 
     epoll_event_dump(ev);
 #ifdef DARLING
-    /* x86Code: Linux reports a stream socket that was never connected as writable and hung up (TCP_CLOSE); XNU's
+    /* x86Sim: Linux reports a stream socket that was never connected as writable and hung up (TCP_CLOSE); XNU's
      * sowriteable() is false for it (PR_CONNREQUIRED, not connected, no error). Network.framework took that EV_EOF as
      * the flow failing (ENETDOWN). Dropped, as EVFILT_READ's (read.c). */
     if ((ev->events & EPOLLHUP) && !(ev->events & EPOLLERR)) {
@@ -77,7 +77,7 @@ evfilt_socket_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
     dst->fflags = linux_socket_eof_error(src, ev->events);
           
     /* On return, data contains the the amount of space remaining in the write buffer.
-     * x86Code: TIOCOUTQ is the bytes queued, not the space left (XNU's sbspace()), so an idle socket reported 0 and
+     * x86Sim: TIOCOUTQ is the bytes queued, not the space left (XNU's sbspace()), so an idle socket reported 0 and
      * Network.framework never wrote (an NSURLSession TLS handshake stalled after connect). The space is SO_SNDBUF less
      * what is queued, at least 1 while epoll says writable. */
     {

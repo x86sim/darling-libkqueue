@@ -33,7 +33,7 @@ extern char *KQUEUE_DEBUG_IDENT;
  * darlingserver identifies threads by Linux tid (it signals that thread for S2C
  * calls). Ask Darling's libsystem_kernel directly: in iOS simulator processes
  * __thread_selfid() binds to the runtime's libSystem and returns another thread's
- * id, which deadlocked kqchan reads (x86Code).
+ * id, which deadlocked kqchan reads (x86Sim).
  */
 extern long sys_thread_selfid(void);
 # define THREAD_ID ((int) sys_thread_selfid())

@@ -19,7 +19,7 @@
 struct map {
     size_t len;
     void **data;
-    /* x86Code Perf 2: one past the highest index ever made non-empty. kqmap is sized to the fd limit (524288 here)
+    /* x86Sim Perf 2: one past the highest index ever made non-empty. kqmap is sized to the fd limit (524288 here)
      * and kqueue_foreach (every fd close, every socket change) walked all of it: iosurfaced and metalhostd pass
      * buffers as fds every frame, ~14% of a scroll's samples were this loop. Slots above hi are always empty, so
      * map_foreach visits the same entries in the same order. Raised before the slot is stored. */

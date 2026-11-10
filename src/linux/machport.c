@@ -38,7 +38,7 @@
  * Messages are received together with the event (MACH_RCV_MSG in fflags) into this
  * per-knote buffer, like XNU receives into a workqueue thread's stack. It used to be
  * 64 bytes, so anything bigger came back as MACH_RCV_TOO_LARGE and had to be received
- * again by the caller (x86Code).
+ * again by the caller (x86Sim).
  */
 #define MACHPORT_RECEIVE_BUFFER_SIZE (16 * 1024)
 
@@ -54,7 +54,7 @@ evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
     epoll_event_dump(ev);
     kevent_int_to_64(&src->kev, dst);
 
-	// first, read the notification. x86Code: without blocking: a modification may have
+	// first, read the notification. x86Sim: without blocking: a modification may have
 	// consumed it (see evfilt_machport_knote_modify) after epoll reported it; then
 	// there is nothing to deliver (the server notifies again if events remain)
 	rv = recv(src->kdata.kn_dupfd, &notification, sizeof(notification), MSG_DONTWAIT);
@@ -184,7 +184,7 @@ evfilt_machport_knote_modify(struct filter *filt, struct knote *kn,
 		return -1;
 	}
 
-	// x86Code: a notification may already be queued ahead of the reply; skip it (the
+	// x86Sim: a notification may already be queued ahead of the reply; skip it (the
 	// server treats the modification as acknowledging it and notifies again afterwards
 	// if events are still pending). Reading it as the reply used to lose it for good.
 	for (;;) {

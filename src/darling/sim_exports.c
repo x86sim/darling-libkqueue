@@ -61,7 +61,7 @@ EXPORT void __darling_sim_kqueue_register_listen(int fd)
 	__darling_kqueue_register_listen(fd);
 }
 
-// x86Code: willi/darling-libkqueue#5 (EVFILT_SOCK): libsystem_kernel's connect()/shutdown() hook
+// x86Sim: willi/darling-libkqueue#5 (EVFILT_SOCK): libsystem_kernel's connect()/shutdown() hook
 void kqueue_socket_changed(int fd);
 EXPORT void __darling_sim_kqueue_socket_changed(int fd)
 {

@@ -156,7 +156,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
     dbg_printf("knote_lookup: ident %d == %p", (int)src->ident, kn);
 #ifdef DARLING
     /*
-     * x86Code (Speed 27): a knote watches a duplicate of the program's descriptor (kn_dupfd). XNU drops a file's knotes
+     * x86Sim (Speed 27): a knote watches a duplicate of the program's descriptor (kn_dupfd). XNU drops a file's knotes
      * when the file is closed; if one survived here (a close libkqueue didn't see, or one deferred), the next file
      * given the same number found it on EV_ADD and inherited the old file: a new TCP socket's EVFILT_READ reported
      * the closed mDNSResponder socket's EOF, and Network.framework failed the connection "Network is down". An EV_ADD
@@ -223,7 +223,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
     }
 
     /*
-     * x86Code: XNU's defer-delete (kevent_register): EV_DELETE without EV_ENABLE on a
+     * x86Sim: XNU's defer-delete (kevent_register): EV_DELETE without EV_ENABLE on a
      * disabled EV_DISPATCH2 knote, i.e. one whose event has been delivered and may not
      * have been processed yet, fails with EINPROGRESS. libdispatch then keeps the unote
      * until that event is merged and deletes it with EV_DELETE|EV_ENABLE. Deleting at
@@ -244,7 +244,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
         dbg_printf("knote_delete returned %d", rv);
     } else if ((src->flags & (EV_ADD | EV_DISABLE)) == EV_ADD && src->filter == EVFILT_TIMER) {
         /*
-         * x86Code: EV_ADD on an existing timer re-arms it with the new deadline, as XNU's
+         * x86Sim: EV_ADD on an existing timer re-arms it with the new deadline, as XNU's
          * filt_timertouch does, also when EV_ENABLE comes with it. libdispatch keeps one timer
          * knote per clock/QoS bucket and moves its deadline with EV_ADD|EV_ENABLE|EV_ONESHOT;
          * the EV_ENABLE branch below re-armed it with the old deadline, so a 0.2 s
@@ -302,7 +302,7 @@ err_path:
             memcpy(eventlist, src, sizeof(*src));
             eventlist->data = status;
 #ifdef DARLING
-            /* x86Code (fileproviderd vnode): XNU's kevent_register keeps the change's flags and adds EV_ERROR.
+            /* x86Sim (fileproviderd vnode): XNU's kevent_register keeps the change's flags and adds EV_ERROR.
                With EV_ERROR alone libdispatch could not tell an EV_ADD/EV_DELETE error from one on a live knote
                ("kevent vnode monitor") and skipped its EV_DELETE special cases. */
             eventlist->flags = src->flags | EV_ERROR;

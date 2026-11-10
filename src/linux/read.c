@@ -108,7 +108,7 @@ evfilt_read_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 
     dbg_printf("epoll: %s", epoll_event_dump(ev));
 #ifdef DARLING
-    /* x86Code: Linux reports a stream socket that was never connected as hung up (TCP_CLOSE), so EVFILT_READ fired
+    /* x86Sim: Linux reports a stream socket that was never connected as hung up (TCP_CLOSE), so EVFILT_READ fired
      * with EV_EOF at once. XNU's soreadable() is false for it (not connected, nothing received, no error, receiving
      * not shut down). Network.framework registers EVFILT_READ before connect() and took that EOF as the flow failing:
      * every NSURLSession request ended in ENETDOWN (NSURLErrorNotConnectedToInternet). Such an event is dropped. */

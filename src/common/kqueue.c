@@ -204,7 +204,7 @@ static void kqueue_close_ref_cb(int kqfd, void* kqptr, void* private) {
 };
 
 // Calls fn(kq, arg) for every kqueue, each under its lock. kq_mtx is held only while the kqueues are collected (with a
-// reference each), since fn may take other locks. (x86Code: willi/darling-libkqueue#5)
+// reference each), since fn may take other locks. (x86Sim: willi/darling-libkqueue#5)
 //
 // FIXME: this is a terrible solution. another (possible better) solution would be to keep a map that maps FDs
 //        to the kqueues they're in. then, each FD would hold a reference on the kqueues they're in and we can
@@ -268,7 +268,7 @@ kqueue_closed_fd(int fd)
 	int saved_errno = errno;
 	struct kevent64_s ev[4];
 
-	// x86Code (Speed 27): EV_ENABLE with the deletes: XNU's close() drops every knote on the fd (knote_fdclose),
+	// x86Sim (Speed 27): EV_ENABLE with the deletes: XNU's close() drops every knote on the fd (knote_fdclose),
 	// also a disabled EV_DISPATCH one whose event was delivered. Without it the defer-delete rule (kevent.c: a
 	// program's EV_DELETE on such a knote is EINPROGRESS) kept the knote, with its duplicate of the closed file, and
 	// the next file given the same number inherited it on EV_ADD: a new TCP socket's EVFILT_READ fired at once with
@@ -284,7 +284,7 @@ kqueue_closed_fd(int fd)
 	ev[2].ident = fd;
 	ev[2].flags = EV_DELETE | EV_ENABLE | EV_RECEIPT;
 	ev[2].filter = EVFILT_SOCK;
-	// x86Code (fileproviderd vnode): and EVFILT_VNODE. A vnode knote outlived its descriptor, so the next file given
+	// x86Sim (fileproviderd vnode): and EVFILT_VNODE. A vnode knote outlived its descriptor, so the next file given
 	// that number found it on EV_ADD (kn_modify: same fflags, nothing to do) and watched the old file.
 	ev[3].ident = fd;
 	ev[3].flags = EV_DELETE | EV_ENABLE | EV_RECEIPT;
@@ -298,7 +298,7 @@ kqueue_closed_fd(int fd)
 #ifdef DARLING
     __darling_kqueue_unregister_listen(fd);
 #endif
-	// x86Code: and put it back. Every close() in a process with a kqueue ended with errno = ENOENT, so a
+	// x86Sim: and put it back. Every close() in a process with a kqueue ended with errno = ENOENT, so a
 	// caller that sets errno and then closes a file (libsystem_sim_kernel's _sim_load_entitlements_blob and
 	// csops_audittoken answer a short buffer with ERANGE that way) handed its caller ENOENT: lsd registered every
 	// app and extension without entitlements ("Unable to load entitlements ... (-1) No such file or directory").
