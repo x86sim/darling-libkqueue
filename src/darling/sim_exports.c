@@ -46,6 +46,13 @@ EXPORT int __darling_sim_kqueue_close(int kqfd)
 	return kqueue_close(kqfd);
 }
 
+void kqueue_atfork_child_reset(void);
+// x86Sim: Darling's sys_fork calls it in the child (common/kqueue.c)
+EXPORT void __darling_sim_kqueue_atfork_child(void)
+{
+	kqueue_atfork_child_reset();
+}
+
 EXPORT void __darling_sim_kqueue_closed_fd(int fd)
 {
 	kqueue_closed_fd(fd);

@@ -409,6 +409,29 @@ void VISIBLE kqueue_atfork(void)
     }
 }
 
+// x86Sim (2026-11-13): first thing in a fork's child (Darling's sys_fork, before it closes the parent's guarded
+// descriptors): the child has none of the parent's kqueues (as on Darwin) and the locks are fresh. close() runs
+// kqueue_closed_fd, which takes kq_mtx and the listen registry's lock; another thread of the parent could hold
+// them at the fork (a dispatch thread in kevent), and the child then waited forever (tests/arm64/forkstress.c, a
+// spawn child at boot). No allocation or free here: the parent's malloc locks may be held as well. The kqueues are
+// only forgotten (their memory stays, unused, until the exec); kqueue_atfork() (Darling's libSystem fork path) then
+// finds nothing to tear down.
+static void _kqueue_child_forget_cb(int kqfd, void* kqptr, void* private)
+{
+	(void) kqptr; (void) private;
+	map_delete(kqmap, kqfd);
+}
+
+void VISIBLE kqueue_atfork_child_reset(void)
+{
+	pthread_mutex_init(&kq_mtx, NULL);
+#ifdef DARLING
+	__darling_kqueue_listenregistry_atfork();
+#endif
+	if (kqmap != NULL)
+		map_foreach(kqmap, _kqueue_child_forget_cb, NULL);
+}
+
 void kqueue_addref(struct kqueue *kq)
 {
 	atomic_inc(&kq->kq_ref);
