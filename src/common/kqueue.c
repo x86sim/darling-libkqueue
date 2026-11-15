@@ -271,6 +271,10 @@ kqueue_closed_fd_cb(struct kqueue *kq, void *arg)
 		knote_delete_ident(filt, ev[0].ident);
 	if (filter_lookup(&filt, kq, EVFILT_WRITE) == 0)
 		knote_delete_ident(filt, ev[0].ident);
+	if (filter_lookup(&filt, kq, EVFILT_SOCK) == 0)
+		knote_delete_ident(filt, ev[0].ident);
+	if (filter_lookup(&filt, kq, EVFILT_VNODE) == 0)
+		knote_delete_ident(filt, ev[0].ident);
 }
 
 // this function is too expensive for how often it can be called (which is every time an FD is closed).
@@ -329,12 +333,9 @@ kqueue_socket_changed_cb(struct kqueue *kq, void *arg)
 	struct filter *filt;
 	struct knote *kn;
 
-	if (filter_lookup(&filt, kq, EVFILT_SOCK) == 0) {
-		struct kevent64_s query = { .ident = (uint64_t) *(int *) arg };
-		kn = knote_lookup(filt, &query);
-		if (kn != NULL)
-			evfilt_sock_changed(kn);
-	}
+	// every EVFILT_SOCK knote of the socket, the EV_UDATA_SPECIFIC ones too
+	if (filter_lookup(&filt, kq, EVFILT_SOCK) == 0)
+		knote_foreach_ident(filt, (uintptr_t) *(int *) arg, evfilt_sock_changed);
 }
 
 // Darling's libsystem_kernel calls this after connect() and shutdown() on socket fd, while EVFILT_SOCK knotes exist

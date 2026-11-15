@@ -31,15 +31,28 @@ knote_init(void)
 }
 
 /*
- * EV_UDATA_SPECIFIC asks for a separate registration per udata value.
- * This is supported for EVFILT_READ and EVFILT_WRITE, where every knote
- * already owns its own duplicate of the descriptor in epoll.
+ * EV_UDATA_SPECIFIC asks for a separate registration per udata value (XNU keys
+ * such a knote by ident, filter and udata). Every filter here keeps its state
+ * per knote (its own descriptor duplicate, eventfd, signalfd, timerfd or
+ * darlingserver kqchan; linux/vnode.c shares only the inotify watch), so two
+ * registrations of one ident can live side by side.
+ *
+ * x86Sim: this used to cover EVFILT_READ and EVFILT_WRITE only. libdispatch
+ * registers its proc, signal, vnode, mach receive, socket, memory-pressure and
+ * vfs sources EV_UDATA_SPECIFIC (DISPATCH_EV_DIRECT), and two sources on one
+ * target in a process were one knote: the later sources' EV_ADD only modified
+ * the first registration (its udata kept), so only the first source ever
+ * fired, and cancelling any of them deleted the knote of all. An app never saw
+ * a simulated memory warning (every memory-pressure source is a vnode source
+ * on the process's one $SIMULATOR_MEMORY_WARNINGS descriptor, and libmalloc,
+ * UIKit, CoreAnimation, ... each have one); two DISPATCH_SOURCE_TYPE_PROC
+ * sources on a child, two signal sources on one signal or two mach receive
+ * sources on one port fired only the first (Apple's simulator fires both).
  */
 static int
 knote_udata_specific(const struct knote *kn)
 {
-    return ((kn->kev.filter == EVFILT_READ || kn->kev.filter == EVFILT_WRITE)
-            && (kn->kev.flags & EV_UDATA_SPECIFIC));
+    return ((kn->kev.flags & EV_UDATA_SPECIFIC) != 0);
 }
 
 static int
@@ -156,6 +169,24 @@ knote_lookup(struct filter *filt, const struct kevent64_s *kev)
     dbg_printf("id=%" PRIuPTR " ent=%p", (uintptr_t) kev->ident, ent);
 
     return (ent);
+}
+
+/* Calls fn on every registration of ident in this filter, whatever its udata (fn may not delete it) */
+void
+knote_foreach_ident(struct filter *filt, uintptr_t ident, void (*fn)(struct knote *))
+{
+    struct knote query;
+    struct knote *kn;
+
+    memset(&query, 0, sizeof(query));
+    query.kev.ident = ident;
+    query.kev.filter = filt->kf_id;
+
+    pthread_rwlock_rdlock(&filt->kf_knote_mtx);
+    for (kn = RB_NFIND(knt, &filt->kf_knote, &query); kn != NULL && kn->kev.ident == ident;
+            kn = RB_NEXT(knt, &filt->kf_knote, kn))
+        fn(kn);
+    pthread_rwlock_unlock(&filt->kf_knote_mtx);
 }
 
 /* Delete every registration of ident in this filter, whatever its udata */

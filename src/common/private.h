@@ -251,6 +251,7 @@ int  knote_delete(struct filter *, struct knote *);
 /* Deletes every knote of the filter, whose kqueue is being freed */
 void knote_delete_all(struct filter *);
 void knote_delete_ident(struct filter *, uintptr_t);
+void knote_foreach_ident(struct filter *, uintptr_t, void (*)(struct knote *));
 int  knote_init(void);
 int  knote_disable(struct filter *, struct knote *);
 #define knote_get_filter(knt) &((knt)->kn_kq->kq_filt[(knt)->kev.filter])
