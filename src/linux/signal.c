@@ -15,6 +15,8 @@
  */
 
 #include "private.h"
+#include <fcntl.h>
+#include <sched.h>
 
 #if HAVE_SYS_SIGNALFD_H
 # include <sys/signalfd.h>
@@ -42,6 +44,98 @@ struct signalfd_siginfo
   uint8_t __pad[48];
 };
 #endif
+
+/*
+ * Darling: signals are counted by a tap in libsystem_kernel's signal handler
+ * (__darling_sigexc_add_tap), which sees every signal the process receives
+ * whatever its disposition, as XNU's kqueue does. Each knote gets an eventfd
+ * that the tap adds 1 to per signal: data is the real count. The signalfd path
+ * below (block the signal on the registering thread, read it from a signalfd)
+ * missed every process-directed signal Linux delivered to another thread, and
+ * reported 1 for any number; it stays for SIGCHLD (not routed through the
+ * handler) and when there is no tap.
+ */
+extern int __darling_sigexc_add_tap(void (*tap)(int)) __attribute__((weak_import));
+static int signalfd_add(int epfd, int sigfd, void *ptr);
+
+#define SIGTAP_MAX 128
+static struct {
+    volatile int sig;  /* 0: free */
+    volatile int fd;
+} sigtap[SIGTAP_MAX];
+static volatile int sigtap_inflight;
+static volatile int sigtap_ok = -1;
+
+static void
+sigtap_fire(int sig)
+{
+    __sync_fetch_and_add(&sigtap_inflight, 1);
+    for (int i = 0; i < SIGTAP_MAX; i++) {
+        if (sigtap[i].sig == sig) {
+            int fd = sigtap[i].fd;
+            uint64_t one = 1;
+            if (fd >= 0 && write(fd, &one, sizeof(one)) < 0) {}
+        }
+    }
+    __sync_fetch_and_sub(&sigtap_inflight, 1);
+}
+
+static int
+sigtap_available(void)
+{
+    if (sigtap_ok < 0)
+        sigtap_ok = (__darling_sigexc_add_tap != NULL && __darling_sigexc_add_tap(sigtap_fire) == 0) ? 1 : 0;
+    return sigtap_ok;
+}
+
+static int
+sigtap_slot(int fd)
+{
+    for (int i = 0; i < SIGTAP_MAX; i++)
+        if (sigtap[i].sig != 0 && sigtap[i].fd == fd)
+            return i;
+    return -1;
+}
+
+/* an eventfd in the epoll set, counted by the tap; -1 when not possible */
+static int
+sigtap_create(int epfd, void *ptr, int signum)
+{
+    if (signum == 20 /* SIGCHLD */ || !sigtap_available())
+        return -1;
+    int fd = eventfd(0, 0);
+    if (fd < 0)
+        return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    for (int i = 0; i < SIGTAP_MAX; i++) {
+        if (__sync_bool_compare_and_swap(&sigtap[i].sig, 0, -1)) {  /* claimed, not yet live */
+            sigtap[i].fd = fd;
+            if (signalfd_add(epfd, fd, ptr) < 0) {
+                sigtap[i].fd = -1;
+                sigtap[i].sig = 0;
+                break;
+            }
+            __sync_synchronize();
+            sigtap[i].sig = signum;
+            return fd;
+        }
+    }
+    (void) __close_for_kqueue(fd);
+    return -1;
+}
+
+static void
+sigtap_release(int slot)
+{
+    sigtap[slot].sig = -1;  /* no new writes */
+    __sync_synchronize();
+    while (sigtap_inflight != 0)
+        sched_yield();      /* a tap on another thread may still hold the fd */
+    sigtap[slot].fd = -1;
+    __sync_synchronize();
+    sigtap[slot].sig = 0;
+}
 
 static void
 signalfd_reset(int sigfd)
@@ -129,6 +223,17 @@ evfilt_signal_copyout(struct kevent64_s *dst, struct knote *src, void *x UNUSED)
 
     sigfd = src->kdata.kn_signalfd;
 
+    if (sigfd >= 0 && sigtap_slot(sigfd) >= 0) {
+        uint64_t n = 0;
+        if (read(sigfd, &n, sizeof(n)) != sizeof(n) || n == 0) {
+            dst->filter = EVFILT_DROP;  /* consumed by another thread's copyout: no event */
+            return (0);
+        }
+        kevent_int_to_64(&src->kev, dst);
+        dst->data = (int64_t) n;
+        return (0);
+    }
+
     signalfd_reset(sigfd);
 
     kevent_int_to_64(&src->kev, dst);
@@ -145,7 +250,9 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
 {
     int fd;
 
-    fd = signalfd_create(filter_epfd(filt), kn, kn->kev.ident);
+    fd = sigtap_create(filter_epfd(filt), kn, kn->kev.ident);
+    if (fd < 0)
+        fd = signalfd_create(filter_epfd(filt), kn, kn->kev.ident);
     if (fd > 0) {
         kn->kev.flags |= EV_CLEAR;
         kn->kdata.kn_signalfd = fd;
@@ -179,6 +286,10 @@ evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
         dbg_perror("epoll_ctl(2)");
         return (-1);
     }
+
+    int slot = sigtap_slot(sigfd);
+    if (slot >= 0)
+        sigtap_release(slot);
 
     if (__close_for_kqueue(sigfd) < 0) {
         dbg_perror("close(2)");
