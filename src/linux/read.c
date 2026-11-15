@@ -119,8 +119,13 @@ evfilt_read_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
          * (the socket no longer hangs up): that EOF is dropped too */
         struct pollfd now = { .fd = src->kdata.kn_dupfd, .events = POLLIN | POLLOUT };
         int stale = poll(&now, 1, 0) == 1 && !(now.revents & (POLLIN | POLLHUP | POLLERR));
+        /* ... or connect() completed between that poll() and this state (loopback connects at once): connected,
+         * this direction open and no error is not a hang-up either (else EV_EOF reached the program before the
+         * connection's own events: Network.framework failed a TLS flow to 127.0.0.1 or the host's own address with
+         * ENETDOWN, ~1 in 2) */
         if (_socket_state_4libkqueue(src->kdata.kn_dupfd, &st) == 0
-                && (stale || ((st.state & ~SOSTATE_EVCONNINFO) == 0 && st.error == 0))) {
+                && (stale || ((st.state & ~SOSTATE_EVCONNINFO) == 0 && st.error == 0)
+                    || ((st.state & SOSTATE_ISCONNECTED) && !(st.state & (SOSTATE_ISDISCONNECTED | SOSTATE_CANTRCVMORE)) && st.error == 0))) {
             dst->filter = EVFILT_DROP;
             /* EV_DISPATCH/EV_ONESHOT (EPOLLONESHOT): epoll disarmed the descriptor for this event, which the program
              * never sees, so it never re-enables it: arm it again, edge-triggered, so the hang-up doesn't fire again
