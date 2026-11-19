@@ -250,6 +250,7 @@ void knote_insert(struct filter *, struct knote *);
 int  knote_delete(struct filter *, struct knote *);
 /* Deletes every knote of the filter, whose kqueue is being freed */
 void knote_delete_all(struct filter *);
+void knote_free_all_atfork(struct filter *);
 void knote_delete_ident(struct filter *, uintptr_t);
 void knote_foreach_ident(struct filter *, uintptr_t, void (*)(struct knote *));
 int  knote_init(void);
