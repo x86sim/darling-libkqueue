@@ -490,15 +490,21 @@ again:
          * thread may delete one of them before we copy it out, so knotes
          * queued for freeing are only reclaimed once no thread is waiting.
          */
+        const struct timespec* wait_ts = ts;
+
         kqueue_lock(kq);
         kq->kq_waiters++;
+        if (kqops.kevent_wait_enter != NULL && kqops.kevent_wait_enter(kq))
+            wait_ts = &timeout_zero;
         kqueue_unlock(kq);
 
-        rv = kqops.kevent_wait(kq, nevents, ts);
+        rv = kqops.kevent_wait(kq, nevents, wait_ts);
         dbg_printf("kqops.kevent_wait returned %d", rv);
 
         kqueue_lock(kq);
         kq->kq_waiters--;
+        if (kqops.kevent_wait_exit != NULL)
+            rv = kqops.kevent_wait_exit(kq, rv, nevents);
         if (fastpath(rv > 0)) {
             rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
             ret += rv;

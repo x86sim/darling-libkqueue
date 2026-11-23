@@ -125,6 +125,7 @@ void kqueue_cleanup(struct kqueue* kq)
     for (next = kq->kq_tofree.lh_first; next != NULL; next = tmp)
     {
         tmp = next->kn_entries2free.le_next;
+        free(next->kn_extra_buffer); /* x86Sim: EVFILT_MACHPORT's receive buffer (NULL once a socket knote freed its own) */
         free(next);
     }
     LIST_INIT(&kq->kq_tofree);

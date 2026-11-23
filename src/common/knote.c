@@ -182,6 +182,7 @@ knote_free_all_atfork(struct filter *filt)
                 kn->kdata.kn_dupfd = -1;
             }
         }
+        free(kn->kn_extra_buffer); /* x86Sim: EVFILT_MACHPORT's receive buffer */
         free(kn);
     }
     pthread_rwlock_init(&filt->kf_knote_mtx, NULL);
