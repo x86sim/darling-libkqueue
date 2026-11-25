@@ -76,6 +76,7 @@ struct eventfd {
 #define KNFL_REGULAR_FILE    (0x02)  /* File descriptor is a regular file */
 #define KNFL_DEFER_DELETE    (0x04)  /* Defer deletion until re-enabled */
 #define KNFL_KNOTE_DELETED   (0x10)  /* The knote object is no longer valid */
+#define KNFL_PARKED          (0x20)  /* x86Sim: epoll entry left disarmed on a never-connected socket (linux/platform.c) */
 
 /*
  * XNU's private socket filter (bsd/sys/event.h, PRIVATE), which the SDK's headers leave out

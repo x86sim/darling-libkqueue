@@ -147,6 +147,15 @@ int     linux_get_descriptor_type(struct knote *);
 int     linux_fd_to_path(char *, size_t, int);
 /* EVFILT_READ's and EVFILT_WRITE's fflags for a socket knote whose epoll events are events (platform.c) */
 uint32_t linux_socket_eof_error(struct knote *, uint32_t events);
+#ifdef DARLING
+/* x86Sim: EVFILT_READ/WRITE dropped a socket's hang-up (read.c, write.c); idle: the socket was never connected and
+ * still hangs up. Parks the knote (platform.c) */
+void    linux_socket_hup_dropped(struct knote *, int idle);
+/* The knote's epoll entry is being set anew (modify, enable, disable, delete): it is no longer parked */
+void    linux_socket_unparked(struct knote *);
+/* connect() or listen() on the knote's socket (kqueue_socket_unpark()): a parked knote is armed again */
+void    linux_socket_unpark(struct knote *);
+#endif
 
 /* epoll-related functions */
 

@@ -99,21 +99,15 @@ evfilt_socket_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
          * this direction open and no error is not a hang-up either (else EV_EOF reached the program before the
          * connection's own events: Network.framework failed a TLS flow to 127.0.0.1 or the host's own address with
          * ENETDOWN, ~1 in 2) */
-        if (_socket_state_4libkqueue(src->kdata.kn_dupfd, &st) == 0
-                && (stale || ((st.state & ~SOSTATE_EVCONNINFO) == 0 && st.error == 0)
-                    || ((st.state & SOSTATE_ISCONNECTED) && !(st.state & (SOSTATE_ISDISCONNECTED | SOSTATE_CANTSENDMORE)) && st.error == 0))) {
-            dst->filter = EVFILT_DROP;
-            /* EV_DISPATCH/EV_ONESHOT (EPOLLONESHOT): epoll disarmed the descriptor for this event, which the program
-             * never sees, so it never re-enables it: arm it again, edge-triggered, so the hang-up doesn't fire again
-             * but the connection's readiness does (the program's EV_ENABLE restores the knote's own events) */
-            if (src->data.events & EPOLLONESHOT) {
-                struct epoll_event rearm;
-                memset(&rearm, 0, sizeof(rearm));
-                rearm.events = src->data.events | EPOLLET;
-                rearm.data.ptr = src;
-                (void) epoll_ctl(src->kn_epollfd, EPOLL_CTL_MOD, src->kdata.kn_dupfd, &rearm);
+        if (_socket_state_4libkqueue(src->kdata.kn_dupfd, &st) == 0) {
+            const int never = (st.state & ~SOSTATE_EVCONNINFO) == 0 && st.error == 0;
+            if (stale || never
+                    || ((st.state & SOSTATE_ISCONNECTED) && !(st.state & (SOSTATE_ISDISCONNECTED | SOSTATE_CANTSENDMORE)) && st.error == 0)) {
+                dst->filter = EVFILT_DROP;
+                /* a never-connected socket hangs up until connect() or listen(): the knote is parked (platform.c) */
+                linux_socket_hup_dropped(src, !stale && never);
+                return (0);
             }
-            return (0);
         }
     }
 #endif
@@ -186,6 +180,10 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
 {
     struct epoll_event ev;
 
+#ifdef DARLING
+    /* the entry is set anew (or goes): not parked any more (platform.c) */
+    linux_socket_unparked(kn);
+#endif
     /* Convert the kevent into an epoll_event */
     kn->data.events = EPOLLOUT;
     if (kn->kev.flags & EV_ONESHOT || kn->kev.flags & EV_DISPATCH)
@@ -212,6 +210,10 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
 int
 evfilt_socket_knote_delete(struct filter *filt, struct knote *kn)
 {
+#ifdef DARLING
+    /* the entry is set anew (or goes): not parked any more (platform.c) */
+    linux_socket_unparked(kn);
+#endif
     if (kn->kev.flags & EV_DISABLE)
     {
         (void) __close_for_kqueue(kn->kdata.kn_dupfd);
@@ -234,6 +236,10 @@ evfilt_socket_knote_enable(struct filter *filt, struct knote *kn)
 {
     struct epoll_event ev;
 
+#ifdef DARLING
+    /* the entry is set anew (or goes): not parked any more (platform.c) */
+    linux_socket_unparked(kn);
+#endif
     memset(&ev, 0, sizeof(ev));
     ev.events = kn->data.events;
     ev.data.ptr = kn;
@@ -248,6 +254,10 @@ evfilt_socket_knote_enable(struct filter *filt, struct knote *kn)
 int
 evfilt_socket_knote_disable(struct filter *filt, struct knote *kn)
 {
+#ifdef DARLING
+    /* the entry is set anew (or goes): not parked any more (platform.c) */
+    linux_socket_unparked(kn);
+#endif
 	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
 		dbg_perror("epoll_ctl(2)");
 		return (-1);

@@ -354,6 +354,33 @@ kqueue_socket_changed(int fd)
 	errno = saved_errno;
 }
 
+#ifdef DARLING
+static void
+kqueue_socket_unpark_cb(struct kqueue *kq, void *arg)
+{
+	struct filter *filt;
+
+	if (filter_lookup(&filt, kq, EVFILT_READ) == 0)
+		knote_foreach_ident(filt, (uintptr_t) *(int *) arg, linux_socket_unpark);
+	if (filter_lookup(&filt, kq, EVFILT_WRITE) == 0)
+		knote_foreach_ident(filt, (uintptr_t) *(int *) arg, linux_socket_unpark);
+}
+
+// x86Sim: Darling's libsystem_kernel calls this after connect() and listen() on socket fd while knotes are parked
+// (for-libkqueue.h): the socket no longer hangs up, so its parked EVFILT_READ/WRITE knotes are armed again
+// (linux/platform.c).
+void VISIBLE
+kqueue_socket_unpark(int fd)
+{
+	if (kqmap == NULL)
+		return;
+
+	int saved_errno = errno;
+	kqueue_foreach(kqueue_socket_unpark_cb, &fd);
+	errno = saved_errno;
+}
+#endif
+
 // FIXME: this can race with someone closing the old FD right after it's dup'ed but before we're informed.
 //        we should add a reference on the old FD before trying to dup it, then dup it, and then assign the reference
 //        to the new FD if the dup succeeded or delete the reference if the dup failed.

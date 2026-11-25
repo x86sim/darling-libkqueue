@@ -549,3 +549,76 @@ linux_socket_eof_error(struct knote *kn, uint32_t events)
     return (0);
 #endif
 }
+
+#ifdef DARLING
+/*
+ * x86Sim: Linux reports a stream socket that was never connected (TCP_CLOSE) as hung up, and epoll reports EPOLLHUP
+ * whatever events the entry asks for: XNU reports nothing for such a socket, so EVFILT_READ and EVFILT_WRITE drop that
+ * event (read.c, write.c). Arming the entry again (EPOLL_CTL_MOD, even edge-triggered) queues the hang-up at once, so
+ * a knote on a socket that stays unconnected woke its kevent() forever: launchd_sim's kevent manager thread spun at
+ * 100% CPU on testmanagerd's two launchd sockets (bound, never listened on) and the boot stalled.
+ *
+ * Such a knote is parked instead: its entry is left disarmed (EPOLLONESHOT; a level-triggered one is made one-shot,
+ * which fires once more) until connect() or listen() on the socket (libsystem_kernel calls kqueue_socket_unpark()
+ * while any knote is parked) or the program sets the entry anew (modify, enable, disable, delete).
+ */
+static void
+sock_mod(struct knote *kn, uint32_t events)
+{
+    struct epoll_event ev;
+
+    memset(&ev, 0, sizeof(ev));
+    ev.events = events;
+    ev.data.ptr = kn;
+    (void) epoll_ctl(kn->kn_epollfd, EPOLL_CTL_MOD, kn->kdata.kn_dupfd, &ev);
+}
+
+static int
+sock_hangs_up(int fd)
+{
+    struct pollfd now = { .fd = fd, .events = POLLIN | POLLOUT };
+
+    return poll(&now, 1, 0) == 1 && (now.revents & POLLHUP) && !(now.revents & POLLERR);
+}
+
+void
+linux_socket_unparked(struct knote *kn)
+{
+    if (kn->kn_flags & KNFL_PARKED) {
+        kn->kn_flags &= ~KNFL_PARKED;
+        _socket_park_4libkqueue(-1);
+    }
+}
+
+void
+linux_socket_unpark(struct knote *kn)
+{
+    if (!(kn->kn_flags & KNFL_PARKED))
+        return;
+    linux_socket_unparked(kn);
+    if (!(kn->kn_flags & KNFL_KNOTE_DELETED) && !(kn->kev.flags & EV_DISABLE))
+        sock_mod(kn, kn->data.events);
+}
+
+void
+linux_socket_hup_dropped(struct knote *kn, int idle)
+{
+    if (!idle) {
+        /* stale, or connected meanwhile: EV_DISPATCH/EV_ONESHOT (EPOLLONESHOT): epoll disarmed the entry for this
+         * event, which the program never sees, so it never re-enables it: arm it again, edge-triggered (the program's
+         * EV_ENABLE restores the knote's own events) */
+        if (kn->data.events & EPOLLONESHOT)
+            sock_mod(kn, kn->data.events | EPOLLET);
+        return;
+    }
+    if (kn->kn_flags & KNFL_PARKED)
+        return; /* the one-shot entry's last event: it is disarmed now */
+    kn->kn_flags |= KNFL_PARKED;
+    _socket_park_4libkqueue(1); /* seq_cst: before the check below, as connect()/listen() change the socket first */
+    if (!(kn->data.events & EPOLLONESHOT))
+        sock_mod(kn, kn->data.events | EPOLLONESHOT);
+    /* connect() or listen() may have run before the count went up: then they called no one */
+    if (!sock_hangs_up(kn->kdata.kn_dupfd))
+        linux_socket_unpark(kn);
+}
+#endif

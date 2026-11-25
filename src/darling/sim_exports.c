@@ -74,3 +74,10 @@ EXPORT void __darling_sim_kqueue_socket_changed(int fd)
 {
 	kqueue_socket_changed(fd);
 }
+
+// x86Sim: libsystem_kernel's connect()/listen() hook for knotes parked on a never-connected socket (linux/platform.c)
+void kqueue_socket_unpark(int fd);
+EXPORT void __darling_sim_kqueue_socket_unpark(int fd)
+{
+	kqueue_socket_unpark(fd);
+}
