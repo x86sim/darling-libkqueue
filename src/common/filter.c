@@ -33,6 +33,7 @@ extern const struct filter evfilt_user;
 extern const struct filter evfilt_machport;
 extern const struct filter evfilt_fs;
 extern const struct filter evfilt_sock;
+extern const struct filter evfilt_memorystatus;
 
 static int
 filter_register(struct kqueue *kq, short filter, const struct filter *src)
@@ -108,6 +109,7 @@ filter_register_all(struct kqueue *kq)
     rv += filter_register(kq, EVFILT_MACHPORT, &evfilt_machport);
     rv += filter_register(kq, EVFILT_FS, &evfilt_fs);
     rv += filter_register(kq, EVFILT_SOCK, &evfilt_sock);
+    rv += filter_register(kq, EVFILT_MEMORYSTATUS, &evfilt_memorystatus);
     kq->kq_nfds++;
     if (rv != 0) {
         filter_unregister_all(kq);

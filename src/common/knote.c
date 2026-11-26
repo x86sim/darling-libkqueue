@@ -48,6 +48,7 @@ knote_init(void)
  * UIKit, CoreAnimation, ... each have one); two DISPATCH_SOURCE_TYPE_PROC
  * sources on a child, two signal sources on one signal or two mach receive
  * sources on one port fired only the first (Apple's simulator fires both).
+ * EVFILT_MEMORYSTATUS knotes own nothing, so they qualify too.
  */
 static int
 knote_udata_specific(const struct knote *kn)
